@@ -26,6 +26,7 @@ import {
   getRandomEvents,
   generateId,
   advanceTime,
+  advanceTimeByHours,
   getCurrentDate,
   calculateWarehouseUsedSpace,
   calculateTotalGameHours,
@@ -182,7 +183,18 @@ export const useGameStore = create<GameState>((set, get) => ({
       const response = await api.save.get();
       if (response.success && response.data) {
         const saveData = response.data as SaveGame;
-        const caravans = generateDailyCaravans(get().cities, get().routes, saveData.player.currentDay);
+        
+        let caravans: Caravan[];
+        if (
+          saveData.caravans && 
+          saveData.caravans.length > 0 && 
+          saveData.caravansDay === saveData.player.currentDay
+        ) {
+          caravans = saveData.caravans;
+        } else {
+          caravans = generateDailyCaravans(get().cities, get().routes, saveData.player.currentDay);
+        }
+        
         set({
           player: saveData.player,
           commissions: saveData.commissions,
@@ -217,6 +229,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       warehouse: state.warehouse,
       ledger: state.ledger,
       currentWeatherId: state.currentWeather?.id || 'sunny',
+      caravans: state.caravans,
+      caravansDay: state.player.currentDay,
       savedAt: Date.now(),
     };
     
@@ -464,17 +478,30 @@ export const useGameStore = create<GameState>((set, get) => ({
         return false;
       }
       
-      let departureGameHours = calculateTotalGameHours(state.player.currentDay, state.player.timeOfDay);
+      let currentPlayer = state.player;
+      let tripWeather = weather;
+      let currentCaravans = state.caravans;
       let waitHours = 0;
-      let delayDescription = '';
+      let dayAdvanced = 0;
       
       if (selectedCaravan) {
         const delayResult = getDepartureDelay(state.player.timeOfDay, selectedCaravan.departureTimeOfDay);
         waitHours = delayResult.hoursToWait;
-        delayDescription = delayResult.description;
-        departureGameHours += waitHours;
+        
+        if (waitHours > 0) {
+          const advanceResult = advanceTimeByHours(state.player, waitHours);
+          currentPlayer = advanceResult.player;
+          dayAdvanced = advanceResult.dayAdvanced;
+          
+          if (dayAdvanced > 0) {
+            tripWeather = getRandomWeather(state.weatherList);
+            currentCaravans = generateDailyCaravans(state.cities, state.routes, currentPlayer.currentDay);
+          }
+        }
       }
       
+      const attackRiskReduction = selectedCaravan ? selectedCaravan.banditRiskReduction : 0;
+      const departureGameHours = calculateTotalGameHours(currentPlayer.currentDay, currentPlayer.timeOfDay);
       const etaGameHours = departureGameHours + totalTripTime;
       
       const trip: Trip = {
@@ -489,7 +516,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         eta: Date.now() + totalTripTime * 3600 * 1000,
         etaGameHours,
         currentDamage: 0,
-        weatherId: weather.id,
+        weatherId: tripWeather.id,
         events: [],
         eventEffects: [],
         totalCost: actualTripCost,
@@ -497,6 +524,8 @@ export const useGameStore = create<GameState>((set, get) => ({
         caravanId: selectedCaravan?.id,
         caravanName: selectedCaravan?.leaderName,
         baseCostBeforeShare: baseTripCost,
+        attackRiskReduction,
+        baseTripHours: totalTripTime,
       };
       
       const updatedVehicles = state.vehicles.map(v =>
@@ -504,7 +533,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       );
       
       const shippedGameHours = departureGameHours;
-      const updatedCommissions = state.commissions.map(c =>
+      let finalCommissions = state.commissions.map(c =>
         selectedCommissions.includes(c.id) ? {
           ...c,
           isShipped: true,
@@ -513,10 +542,24 @@ export const useGameStore = create<GameState>((set, get) => ({
         } : c
       );
       
+      if (dayAdvanced > 0) {
+        const newCommissions = generateRandomCommissions(
+          state.goodsList,
+          state.cities,
+          currentPlayer.reputationGrade,
+          6
+        );
+        const existingActive = finalCommissions.filter(c => c.isAccepted || c.isCompleted);
+        finalCommissions = [...existingActive, ...newCommissions];
+      }
+      
       set({
+        player: currentPlayer,
         trips: [...state.trips, trip],
         vehicles: updatedVehicles,
-        commissions: updatedCommissions,
+        commissions: finalCommissions,
+        caravans: currentCaravans,
+        currentWeather: waitHours > 0 ? tripWeather : state.currentWeather,
         selectedCommissions: [],
         selectedVehicle: null,
         selectedRoute: null,
@@ -538,15 +581,15 @@ export const useGameStore = create<GameState>((set, get) => ({
     const route = state.routes.find(r => r.id === trip.routeId);
     if (!route) return;
     
-    let dangerRiskReduction = 0;
-    if (trip.carpoolMode && trip.carpoolMode !== 'solo' && trip.caravanId) {
+    let attackRiskReduction = trip.attackRiskReduction ?? 0;
+    if (attackRiskReduction === 0 && trip.carpoolMode && trip.carpoolMode !== 'solo' && trip.caravanId) {
       const caravan = state.caravans.find(c => c.id === trip.caravanId);
       if (caravan) {
-        dangerRiskReduction = caravan.banditRiskReduction;
+        attackRiskReduction = caravan.banditRiskReduction;
       }
     }
     
-    const allEvents = getRandomEvents(state.eventsList, route.type, 2, dangerRiskReduction);
+    const allEvents = getRandomEvents(state.eventsList, route.type, 2, attackRiskReduction);
     
     set({
       currentTripId: tripId,
@@ -681,6 +724,23 @@ export const useGameStore = create<GameState>((set, get) => ({
     
     const routeCalc = calculateRouteTime(route, vehicle, weather);
     
+    let totalTripHours = routeCalc.totalTime;
+    if (trip.baseTripHours != null && trip.baseTripHours > 0) {
+      totalTripHours = trip.baseTripHours;
+    } else if (trip.departureGameHours != null && trip.etaGameHours != null) {
+      totalTripHours = trip.etaGameHours - trip.departureGameHours;
+    } else if (trip.carpoolMode && trip.carpoolMode !== 'solo' && trip.caravanId) {
+      const caravan = state.caravans.find(c => c.id === trip.caravanId);
+      if (caravan) {
+        const carpoolSpeedCalc = calculateCarpoolSpeed(
+          routeCalc.totalTime,
+          trip.carpoolMode,
+          caravan
+        );
+        totalTripHours = carpoolSpeedCalc.finalTime;
+      }
+    }
+    
     const settlement = settleTrip(
       trip,
       commissions,
@@ -690,7 +750,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       loadCalc.isOverloaded,
       trip.eventEffects,
       state.player.priceBonus,
-      routeCalc.totalTime
+      totalTripHours
     );
     
     const ledgerEntries = generateLedgerEntries(

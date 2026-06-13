@@ -91,11 +91,13 @@ export const getRandomWeather = (weatherList: Weather[]): Weather => {
   return weatherList[0];
 };
 
+const ATTACK_EVENT_IDS = new Set(['bandit', 'pirate']);
+
 export const getRandomEvents = (
   eventsList: GameEvent[],
   routeType: 'land' | 'water',
   count: number = 2,
-  dangerRiskReduction: number = 0
+  attackRiskReduction: number = 0
 ): GameEvent[] => {
   const filteredEvents = eventsList.filter(e => {
     if (routeType === 'water' && e.id === 'bandit') return false;
@@ -110,8 +112,8 @@ export const getRandomEvents = (
     if (selected.length >= count) break;
     
     let probability = event.probability * 2;
-    if (event.type === 'danger' && dangerRiskReduction > 0) {
-      probability = probability * (1 - dangerRiskReduction);
+    if (ATTACK_EVENT_IDS.has(event.id) && attackRiskReduction > 0) {
+      probability = probability * (1 - attackRiskReduction);
     }
     
     if (Math.random() < probability) {
@@ -187,6 +189,8 @@ export const createInitialSaveGame = (): SaveGame => {
     warehouse: createInitialWarehouse(),
     ledger: [],
     currentWeatherId: 'sunny',
+    caravans: [],
+    caravansDay: 0,
     savedAt: Date.now(),
   };
 };
@@ -209,6 +213,36 @@ export const advanceTime = (player: Player): Player => {
     ...player,
     timeOfDay: newTimeOfDay,
     currentDay: newDay,
+  };
+};
+
+export const advanceTimeByHours = (player: Player, hours: number): { player: Player; dayAdvanced: number } => {
+  if (hours <= 0) return { player, dayAdvanced: 0 };
+  
+  const timeOrder: Array<'morning' | 'afternoon' | 'evening' | 'night'> = ['morning', 'afternoon', 'evening', 'night'];
+  const hoursPerPeriod = 6;
+  const periodsToAdvance = Math.ceil(hours / hoursPerPeriod);
+  
+  let currentIndex = timeOrder.indexOf(player.timeOfDay);
+  let newDay = player.currentDay;
+  let dayAdvanced = 0;
+  
+  for (let i = 0; i < periodsToAdvance; i++) {
+    currentIndex++;
+    if (currentIndex >= timeOrder.length) {
+      currentIndex = 0;
+      newDay++;
+      dayAdvanced++;
+    }
+  }
+  
+  return {
+    player: {
+      ...player,
+      timeOfDay: timeOrder[currentIndex],
+      currentDay: newDay,
+    },
+    dayAdvanced,
   };
 };
 

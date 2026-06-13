@@ -155,6 +155,8 @@ export interface Trip {
   caravanId?: string;
   caravanName?: string;
   baseCostBeforeShare?: number;
+  attackRiskReduction?: number;
+  baseTripHours?: number;
 }
 
 export interface Warehouse {
@@ -197,6 +199,8 @@ export interface SaveGame {
   warehouse: Warehouse;
   ledger: LedgerEntry[];
   currentWeatherId: string;
+  caravans: Caravan[];
+  caravansDay: number;
   savedAt: number;
 }
 
