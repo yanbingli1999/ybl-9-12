@@ -1,7 +1,9 @@
-import { Truck, MapPin, Clock, Coins, AlertTriangle } from 'lucide-react';
+import { Truck, MapPin, Clock, Coins, AlertTriangle, Shield, Users } from 'lucide-react';
 import { useGameStore } from '../../store/useGameStore';
 import { calculateRouteTime, calculateLoad, calculateTripCost } from '../../utils/routeCalc';
+import { calculateCarpoolCost, calculateCarpoolSpeed, getDepartureDelay } from '../../utils/gameLogic';
 import CommissionCard from '../port/CommissionCard';
+import CarpoolPanel from './CarpoolPanel';
 import { useMemo, useState } from 'react';
 
 const RoutePlanner = () => {
@@ -16,6 +18,9 @@ const RoutePlanner = () => {
     selectedCommissions,
     selectedVehicle,
     selectedRoute,
+    carpoolSelection,
+    getSelectedCaravan,
+    getCarpoolBanditRiskReduction,
     selectCommission,
     selectVehicle,
     selectRoute,
@@ -46,11 +51,22 @@ const RoutePlanner = () => {
   const selectedVehicleData = vehicles.find(v => v.id === selectedVehicle);
   const selectedRouteData = routes.find(r => r.id === selectedRoute);
   const destination = cities.find(c => c.id === destinationId);
+  const selectedCaravan = getSelectedCaravan();
+  const banditRiskReduction = getCarpoolBanditRiskReduction();
   
   const routeCalculation = useMemo(() => {
     if (!selectedRouteData || !selectedVehicleData || !currentWeather) return null;
     return calculateRouteTime(selectedRouteData, selectedVehicleData, currentWeather);
   }, [selectedRouteData, selectedVehicleData, currentWeather]);
+  
+  const carpoolSpeedCalc = useMemo(() => {
+    if (!routeCalculation) return null;
+    return calculateCarpoolSpeed(
+      routeCalculation.totalTime,
+      carpoolSelection.mode,
+      selectedCaravan || undefined
+    );
+  }, [routeCalculation, carpoolSelection.mode, selectedCaravan]);
   
   const loadCalculation = useMemo(() => {
     if (!selectedVehicleData || selectedCommissionsData.length === 0) return null;
@@ -61,10 +77,25 @@ const RoutePlanner = () => {
     );
   }, [selectedVehicleData, selectedCommissionsData, goodsList]);
   
-  const tripCost = useMemo(() => {
+  const baseTripCost = useMemo(() => {
     if (!selectedRouteData || !selectedVehicleData || !routeCalculation) return 0;
     return calculateTripCost(selectedRouteData, selectedVehicleData, routeCalculation.totalTime);
   }, [selectedRouteData, selectedVehicleData, routeCalculation]);
+  
+  const carpoolCostCalc = useMemo(() => {
+    return calculateCarpoolCost(
+      baseTripCost,
+      carpoolSelection.mode,
+      selectedCaravan || undefined
+    );
+  }, [baseTripCost, carpoolSelection.mode, selectedCaravan]);
+  
+  const tripCost = carpoolCostCalc.playerShare;
+  
+  const departureDelayInfo = useMemo(() => {
+    if (!selectedCaravan) return null;
+    return getDepartureDelay(player.timeOfDay, selectedCaravan.departureTimeOfDay);
+  }, [selectedCaravan, player.timeOfDay]);
   
   const handleStartTrip = async () => {
     const success = await startTrip();
@@ -199,6 +230,13 @@ const RoutePlanner = () => {
                 )}
               </div>
             )}
+            
+            {selectedRouteData && (
+              <CarpoolPanel
+                destinationId={destinationId}
+                routeType={selectedRouteData?.type || null}
+              />
+            )}
           </div>
           
           <div className="space-y-6">
@@ -298,7 +336,7 @@ const RoutePlanner = () => {
                       <div className="flex justify-between">
                         <span className="text-slate-600">预计耗时</span>
                         <span className="font-medium text-slate-800">
-                          {routeCalculation.totalTime} 小时
+                          {carpoolSpeedCalc?.finalTime || routeCalculation.totalTime} 小时
                         </span>
                       </div>
                       <div className="flex justify-between">
@@ -315,10 +353,52 @@ const RoutePlanner = () => {
                           <span>×{currentWeather.speedModifier}</span>
                         </div>
                       )}
+                      {carpoolSpeedCalc && carpoolSpeedCalc.penaltyHours > 0 && (
+                        <div className="flex justify-between text-orange-600">
+                          <span className="flex items-center gap-1">
+                            <AlertTriangle className="w-4 h-4" />
+                            合乘减速
+                          </span>
+                          <span>+{carpoolSpeedCalc.penaltyHours} 小时</span>
+                        </div>
+                      )}
+                      {departureDelayInfo && departureDelayInfo.hoursToWait > 0 && (
+                        <div className="flex justify-between text-sky-600">
+                          <span className="flex items-center gap-1">
+                            <Clock className="w-4 h-4" />
+                            等待出发
+                          </span>
+                          <span>+{departureDelayInfo.hoursToWait} 小时</span>
+                        </div>
+                      )}
+                      {banditRiskReduction > 0 && (
+                        <div className="flex justify-between text-green-600">
+                          <span className="flex items-center gap-1">
+                            <Shield className="w-4 h-4" />
+                            山贼风险降低
+                          </span>
+                          <span>↓{Math.round(banditRiskReduction * 100)}%</span>
+                        </div>
+                      )}
+                      {carpoolSelection.mode !== 'solo' && selectedCaravan && (
+                        <div className="flex justify-between text-amber-600">
+                          <span className="flex items-center gap-1">
+                            <Users className="w-4 h-4" />
+                            {carpoolSelection.mode === 'convoy' ? '并队同行' : '搭顺风车'}
+                          </span>
+                          <span className="text-xs">{selectedCaravan.leaderName}</span>
+                        </div>
+                      )}
                     </div>
                   )}
                   
                   <div className="pt-4 border-t border-slate-100">
+                    {carpoolCostCalc.savings > 0 && (
+                      <div className="flex justify-between text-sm mb-2 text-green-600">
+                        <span>合乘节省</span>
+                        <span className="font-medium">-{carpoolCostCalc.savings.toLocaleString()} 金币</span>
+                      </div>
+                    )}
                     <div className="flex justify-between text-sm mb-3">
                       <span className="text-slate-600">运输费用</span>
                       <span className="font-bold text-lg text-amber-600 flex items-center gap-1">
@@ -355,12 +435,20 @@ const RoutePlanner = () => {
                       !selectedRoute ||
                       player.gold < tripCost ||
                       (loadCalculation?.isOverloaded || false) ||
-                      isDispatching
+                      isDispatching ||
+                      (carpoolSelection.mode === 'hitchhike' && selectedCaravan && loadCalculation && loadCalculation.currentLoad > selectedCaravan.availableSeats)
                     }
                     className="w-full py-3 bg-gradient-to-r from-amber-500 to-orange-500 text-white font-medium rounded-lg hover:from-amber-400 hover:to-orange-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {isDispatching ? '派车中...' : '确认派车'}
                   </button>
+                  
+                  {carpoolSelection.mode === 'hitchhike' && selectedCaravan && loadCalculation && loadCalculation.currentLoad > selectedCaravan.availableSeats && (
+                    <p className="text-xs text-red-500 mt-2 flex items-center gap-1">
+                      <AlertTriangle className="w-3 h-3" />
+                      您的货物({loadCalculation.currentLoad})超过该商队剩余载重({selectedCaravan.availableSeats})，无法搭顺风车
+                    </p>
+                  )}
                 </div>
               </div>
             )}

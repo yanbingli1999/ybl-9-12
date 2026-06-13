@@ -14,6 +14,9 @@ import type {
   Weather,
   GameEvent,
   ReputationGrade,
+  Caravan,
+  CarpoolMode,
+  CarpoolSelection,
 } from '../../shared/types';
 import { api } from '../services/api';
 import {
@@ -26,6 +29,10 @@ import {
   getCurrentDate,
   calculateWarehouseUsedSpace,
   calculateTotalGameHours,
+  generateDailyCaravans,
+  calculateCarpoolCost,
+  calculateCarpoolSpeed,
+  getDepartureDelay,
 } from '../utils/gameLogic';
 import {
   calculateReputationGrade,
@@ -57,6 +64,9 @@ interface GameState {
   weatherList: Weather[];
   eventsList: GameEvent[];
   
+  caravans: Caravan[];
+  carpoolSelection: CarpoolSelection;
+  
   selectedCommissions: string[];
   selectedVehicle: string | null;
   selectedRoute: string | null;
@@ -77,10 +87,12 @@ interface GameState {
   newGame: () => void;
   
   generateDailyCommissions: () => void;
+  generateDailyCaravans: () => void;
   acceptCommission: (commissionId: string) => boolean;
   selectCommission: (commissionId: string) => void;
   selectVehicle: (vehicleId: string) => void;
   selectRoute: (routeId: string) => void;
+  selectCarpoolMode: (mode: CarpoolMode, caravanId?: string) => void;
   
   startTrip: () => Promise<boolean>;
   processTripEvents: (tripId: string) => void;
@@ -98,6 +110,8 @@ interface GameState {
   getAvailableVehicles: () => PlayerVehicle[];
   getAvailableRoutes: (destinationId: string) => Route[];
   getCurrentDate: () => string;
+  getSelectedCaravan: () => Caravan | null;
+  getCarpoolBanditRiskReduction: () => number;
 }
 
 export const useGameStore = create<GameState>((set, get) => ({
@@ -115,6 +129,9 @@ export const useGameStore = create<GameState>((set, get) => ({
   vehicleTemplates: [],
   weatherList: [],
   eventsList: [],
+  
+  caravans: [],
+  carpoolSelection: { mode: 'solo', caravanId: null },
   
   selectedCommissions: [],
   selectedVehicle: null,
@@ -165,6 +182,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       const response = await api.save.get();
       if (response.success && response.data) {
         const saveData = response.data as SaveGame;
+        const caravans = generateDailyCaravans(get().cities, get().routes, saveData.player.currentDay);
         set({
           player: saveData.player,
           commissions: saveData.commissions,
@@ -175,6 +193,8 @@ export const useGameStore = create<GameState>((set, get) => ({
           currentWeather: saveData.currentWeatherId 
             ? get().weatherList.find(w => w.id === saveData.currentWeatherId) || null
             : null,
+          caravans,
+          carpoolSelection: { mode: 'solo', caravanId: null },
         });
       } else {
         get().newGame();
@@ -211,6 +231,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const initial = createInitialSaveGame();
     const weatherList = get().weatherList;
     const weather = weatherList.length > 0 ? getRandomWeather(weatherList) : null;
+    const caravans = generateDailyCaravans(get().cities, get().routes, initial.player.currentDay);
     
     set({
       player: initial.player,
@@ -220,6 +241,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       warehouse: initial.warehouse,
       ledger: [],
       currentWeather: weather,
+      caravans,
+      carpoolSelection: { mode: 'solo', caravanId: null },
       selectedCommissions: [],
       selectedVehicle: null,
       selectedRoute: null,
@@ -249,6 +272,23 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({
       commissions: [...filteredCommissions, ...newCommissions],
     });
+  },
+  
+  generateDailyCaravans: () => {
+    const state = get();
+    const caravans = generateDailyCaravans(state.cities, state.routes, state.player.currentDay);
+    set({
+      caravans,
+      carpoolSelection: { mode: 'solo', caravanId: null },
+    });
+  },
+  
+  selectCarpoolMode: (mode: CarpoolMode, caravanId?: string) => {
+    if (mode === 'solo') {
+      set({ carpoolSelection: { mode: 'solo', caravanId: null } });
+    } else if (caravanId) {
+      set({ carpoolSelection: { mode, caravanId } });
+    }
   },
   
   acceptCommission: (commissionId: string) => {
@@ -316,7 +356,10 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
   
   selectRoute: (routeId: string) => {
-    set({ selectedRoute: routeId });
+    set({
+      selectedRoute: routeId,
+      carpoolSelection: { mode: 'solo', caravanId: null },
+    });
   },
   
   startTrip: async () => {
@@ -325,7 +368,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     
     try {
       const state = get();
-      const { selectedCommissions, selectedVehicle, selectedRoute } = state;
+      const { selectedCommissions, selectedVehicle, selectedRoute, carpoolSelection, caravans } = state;
       
       if (selectedCommissions.length === 0) {
         set({ error: '请选择要运输的货物' });
@@ -348,6 +391,25 @@ export const useGameStore = create<GameState>((set, get) => ({
       
       if (!vehicle.isAvailable) {
         set({ error: '该车辆已在使用中' });
+        return false;
+      }
+      
+      const selectedCaravan = carpoolSelection.caravanId
+        ? caravans.find(c => c.id === carpoolSelection.caravanId)
+        : null;
+      
+      if ((carpoolSelection.mode === 'convoy' || carpoolSelection.mode === 'hitchhike') && !selectedCaravan) {
+        set({ error: '请选择要合乘的商队' });
+        return false;
+      }
+      
+      if (selectedCaravan && selectedCaravan.routeId !== selectedRoute) {
+        set({ error: '所选商队与路线不匹配' });
+        return false;
+      }
+      
+      if (selectedCaravan && selectedCaravan.vehicleType !== vehicle.type) {
+        set({ error: '所选商队的交通工具类型与您的车辆不匹配' });
         return false;
       }
       
@@ -376,16 +438,44 @@ export const useGameStore = create<GameState>((set, get) => ({
         return false;
       }
       
-      const routeCalc = calculateRouteTime(route, vehicle, weather);
-      const tripCost = calculateTripCost(route, vehicle, routeCalc.totalTime);
-      
-      if (state.player.gold < tripCost) {
-        set({ error: '金币不足，无法支付运输费用' });
+      if (selectedCaravan && carpoolSelection.mode === 'hitchhike' && loadCalc.currentLoad > selectedCaravan.availableSeats) {
+        set({ error: `搭顺风车的话，您的货物重量(${loadCalc.currentLoad})超过了该商队的剩余承载量(${selectedCaravan.availableSeats})` });
         return false;
       }
       
-      const departureGameHours = calculateTotalGameHours(state.player.currentDay, state.player.timeOfDay);
-      const etaGameHours = departureGameHours + routeCalc.totalTime;
+      const baseRouteCalc = calculateRouteTime(route, vehicle, weather);
+      const carpoolSpeedCalc = calculateCarpoolSpeed(
+        baseRouteCalc.totalTime,
+        carpoolSelection.mode,
+        selectedCaravan || undefined
+      );
+      const totalTripTime = carpoolSpeedCalc.finalTime;
+      
+      const baseTripCost = calculateTripCost(route, vehicle, baseRouteCalc.totalTime);
+      const carpoolCostCalc = calculateCarpoolCost(
+        baseTripCost,
+        carpoolSelection.mode,
+        selectedCaravan || undefined
+      );
+      const actualTripCost = carpoolCostCalc.playerShare;
+      
+      if (state.player.gold < actualTripCost) {
+        set({ error: `金币不足，需支付 ${actualTripCost} 金币` });
+        return false;
+      }
+      
+      let departureGameHours = calculateTotalGameHours(state.player.currentDay, state.player.timeOfDay);
+      let waitHours = 0;
+      let delayDescription = '';
+      
+      if (selectedCaravan) {
+        const delayResult = getDepartureDelay(state.player.timeOfDay, selectedCaravan.departureTimeOfDay);
+        waitHours = delayResult.hoursToWait;
+        delayDescription = delayResult.description;
+        departureGameHours += waitHours;
+      }
+      
+      const etaGameHours = departureGameHours + totalTripTime;
       
       const trip: Trip = {
         id: generateId(),
@@ -396,13 +486,17 @@ export const useGameStore = create<GameState>((set, get) => ({
         progress: 0,
         departureTime: Date.now(),
         departureGameHours,
-        eta: Date.now() + routeCalc.totalTime * 3600 * 1000,
+        eta: Date.now() + totalTripTime * 3600 * 1000,
         etaGameHours,
         currentDamage: 0,
         weatherId: weather.id,
         events: [],
         eventEffects: [],
-        totalCost: tripCost,
+        totalCost: actualTripCost,
+        carpoolMode: carpoolSelection.mode,
+        caravanId: selectedCaravan?.id,
+        caravanName: selectedCaravan?.leaderName,
+        baseCostBeforeShare: baseTripCost,
       };
       
       const updatedVehicles = state.vehicles.map(v =>
@@ -426,6 +520,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         selectedCommissions: [],
         selectedVehicle: null,
         selectedRoute: null,
+        carpoolSelection: { mode: 'solo', caravanId: null },
       });
       
       await get().saveGame();
@@ -443,7 +538,15 @@ export const useGameStore = create<GameState>((set, get) => ({
     const route = state.routes.find(r => r.id === trip.routeId);
     if (!route) return;
     
-    const allEvents = getRandomEvents(state.eventsList, route.type, 2);
+    let dangerRiskReduction = 0;
+    if (trip.carpoolMode && trip.carpoolMode !== 'solo' && trip.caravanId) {
+      const caravan = state.caravans.find(c => c.id === trip.caravanId);
+      if (caravan) {
+        dangerRiskReduction = caravan.banditRiskReduction;
+      }
+    }
+    
+    const allEvents = getRandomEvents(state.eventsList, route.type, 2, dangerRiskReduction);
     
     set({
       currentTripId: tripId,
@@ -711,6 +814,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (newPlayer.timeOfDay === 'morning') {
       weather = getRandomWeather(state.weatherList);
       get().generateDailyCommissions();
+      get().generateDailyCaravans();
     }
     
     set({
@@ -757,5 +861,17 @@ export const useGameStore = create<GameState>((set, get) => ({
   
   getCurrentDate: () => {
     return getCurrentDate(get().player.currentDay);
+  },
+  
+  getSelectedCaravan: () => {
+    const state = get();
+    if (!state.carpoolSelection.caravanId) return null;
+    return state.caravans.find(c => c.id === state.carpoolSelection.caravanId) || null;
+  },
+  
+  getCarpoolBanditRiskReduction: () => {
+    const caravan = get().getSelectedCaravan();
+    if (!caravan || get().carpoolSelection.mode === 'solo') return 0;
+    return caravan.banditRiskReduction;
   },
 }));

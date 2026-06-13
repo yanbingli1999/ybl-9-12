@@ -1,4 +1,4 @@
-import { Truck, Clock, MapPin, AlertTriangle } from 'lucide-react';
+import { Truck, Clock, MapPin, AlertTriangle, Users, UserPlus } from 'lucide-react';
 import { useGameStore } from '../../store/useGameStore';
 
 const TransportManager = () => {
@@ -99,6 +99,24 @@ const TransportManager = () => {
                       </div>
                       
                       <div className="space-y-3">
+                        {trip.carpoolMode && trip.carpoolMode !== 'solo' && trip.caravanName && (
+                          <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 rounded-lg border border-amber-100">
+                            {trip.carpoolMode === 'convoy' ? (
+                              <Users className="w-4 h-4 text-amber-600" />
+                            ) : (
+                              <UserPlus className="w-4 h-4 text-amber-600" />
+                            )}
+                            <span className="text-sm text-amber-700 font-medium">
+                              {trip.carpoolMode === 'convoy' ? '并队同行' : '搭顺风车'} · {trip.caravanName}
+                            </span>
+                            {trip.baseCostBeforeShare && trip.baseCostBeforeShare > trip.totalCost && (
+                              <span className="text-xs text-green-600 ml-auto">
+                                节省 ¥{trip.baseCostBeforeShare - trip.totalCost}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        
                         <div>
                           <div className="flex justify-between text-sm mb-1">
                             <span className="text-slate-600">运输进度</span>

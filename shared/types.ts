@@ -101,6 +101,38 @@ export interface PlayerVehicle {
   isAvailable: boolean;
 }
 
+export type CarpoolMode = 'solo' | 'convoy' | 'hitchhike';
+
+export interface CaravanMember {
+  id: string;
+  name: string;
+  cargoWeight: number;
+  description: string;
+}
+
+export interface Caravan {
+  id: string;
+  leaderName: string;
+  routeId: string;
+  destinationId: string;
+  destinationName: string;
+  departureTimeOfDay: 'morning' | 'afternoon' | 'evening';
+  departureLabel: string;
+  vehicleType: 'land' | 'water';
+  members: CaravanMember[];
+  totalCargoWeight: number;
+  capacity: number;
+  availableSeats: number;
+  banditRiskReduction: number;
+  costShareRatio: number;
+  speedPenaltyWeight: number;
+}
+
+export interface CarpoolSelection {
+  mode: CarpoolMode;
+  caravanId: string | null;
+}
+
 export interface Trip {
   id: string;
   vehicleId: string;
@@ -119,6 +151,10 @@ export interface Trip {
   events: string[];
   eventEffects: { title: string; effect: any }[];
   totalCost: number;
+  carpoolMode?: CarpoolMode;
+  caravanId?: string;
+  caravanName?: string;
+  baseCostBeforeShare?: number;
 }
 
 export interface Warehouse {
